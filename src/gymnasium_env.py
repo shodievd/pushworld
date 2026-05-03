@@ -13,6 +13,12 @@ neural-network input without any casting or rescaling.
                 4/6 GOAL_OBJECT  5/6 EXTRA_MOVABLE  6/6 AGENT
 "rgb_grid"  : Dict{"rgb": <rgb_array obs>, "grid": <grid obs>}.
 
+Padding options (``padding`` constructor arg)
+---------------------------------------------
+"puzzle"    : pad to max dimensions of all loaded puzzles (default).
+"benchmark" : pad to max dimensions of the official benchmark puzzle set.
+None        : no padding; all loaded puzzles must share the same dimensions.
+
 Reward scheme (Appendix D of https://arxiv.org/pdf/1707.06203.pdf):
   +10.0 on solving the puzzle, +1.0 per newly achieved sub-goal, -0.01 per step.
 """
@@ -25,7 +31,6 @@ import numpy as np
 
 from pushworld.config import PUZZLE_EXTENSION
 from pushworld.puzzle import (
-    DEFAULT_BORDER_WIDTH,
     DEFAULT_PIXELS_PER_CELL,
     NUM_ACTIONS,
     PushWorldPuzzle,
@@ -111,10 +116,12 @@ class PushWorldGymnasiumEnv(gym.Env):
             All discovered puzzles are loaded; `reset` samples one at random.
         observation_mode: One of ``"rgb_array"``, ``"grid"``, or ``"rgb_grid"``.
         max_steps: Optional episode step limit; causes truncation when reached.
-        border_width: Pixel border width used when rendering (must be >= 1).
-        pixels_per_cell: Pixel size of one grid cell when rendering (must be >= 3).
-        standard_padding: If True, pad observations to the maximum dimensions of
-            the official benchmark puzzles instead of the loaded puzzle set.
+        border_width: Pixel border width for RGB rendering (0 = no borders, default).
+            Borders are visual noise for models; set > 0 only for human inspection.
+        pixels_per_cell: Pixel size of one grid cell for RGB rendering (must be >= 1).
+        padding: ``"puzzle"`` (default) pads to the max dimensions of all loaded
+            puzzles; ``"benchmark"`` pads to the official benchmark max; ``None``
+            disables padding (all loaded puzzles must share the same dimensions).
     """
 
     metadata = {"render_modes": ["rgb_array"]}
@@ -125,9 +132,9 @@ class PushWorldGymnasiumEnv(gym.Env):
         puzzle_path: str,
         observation_mode: str = "rgb_array",
         max_steps: Optional[int] = None,
-        border_width: int = DEFAULT_BORDER_WIDTH,
+        border_width: int = 0,
         pixels_per_cell: int = DEFAULT_PIXELS_PER_CELL,
-        standard_padding: bool = False,
+        padding: Optional[str] = "puzzle",
     ) -> None:
         super().__init__()
 
@@ -136,10 +143,12 @@ class PushWorldGymnasiumEnv(gym.Env):
                 f"observation_mode must be one of {OBSERVATION_MODES}, "
                 f"got {observation_mode!r}."
             )
-        if border_width < 1:
-            raise ValueError("border_width must be >= 1.")
-        if pixels_per_cell < 3:
-            raise ValueError("pixels_per_cell must be >= 3.")
+        if border_width < 0:
+            raise ValueError("border_width must be >= 0.")
+        if pixels_per_cell < 1:
+            raise ValueError("pixels_per_cell must be >= 1.")
+        if padding not in ("puzzle", "benchmark", None):
+            raise ValueError("padding must be 'puzzle', 'benchmark', or None.")
 
         self._puzzles = [
             PushWorldPuzzle(path)
@@ -154,13 +163,22 @@ class PushWorldGymnasiumEnv(gym.Env):
         self._border_width = border_width
 
         widths, heights = zip(*[p.dimensions for p in self._puzzles])
-        self._max_cell_width = max(widths)
-        self._max_cell_height = max(heights)
 
-        if standard_padding:
+        if padding is None:
+            if len(set(widths)) > 1 or len(set(heights)) > 1:
+                raise ValueError(
+                    "padding=None requires all puzzles to have the same dimensions, "
+                    "but the loaded puzzles differ in size."
+                )
+            self._max_cell_width = widths[0]
+            self._max_cell_height = heights[0]
+        elif padding == "puzzle":
+            self._max_cell_width = max(widths)
+            self._max_cell_height = max(heights)
+        else:  # "benchmark"
             standard_cell_height, standard_cell_width = get_max_puzzle_dimensions()
 
-            if standard_cell_height < self._max_cell_height:
+            if standard_cell_height < max(heights):
                 raise ValueError(
                     "`standard_padding` is True, but the maximum puzzle height in "
                     "BENCHMARK_PUZZLES_PATH is less than the height of the puzzle(s) "
@@ -169,7 +187,7 @@ class PushWorldGymnasiumEnv(gym.Env):
             else:
                 self._max_cell_height = standard_cell_height
 
-            if standard_cell_width < self._max_cell_width:
+            if standard_cell_width < max(widths):
                 raise ValueError(
                     "`standard_padding` is True, but the maximum puzzle width in "
                     "BENCHMARK_PUZZLES_PATH is less than the width of the puzzle(s) "
