@@ -55,31 +55,44 @@ def _encode_grid(
 ) -> np.ndarray:
     """Return a padded float32 grid encoding of *state*, values in [0, 1].
 
+    Mirrors the drawing order used by PushWorldPuzzle.render():
+      walls → agent walls → goal targets → movable objects (agent last / highest).
+
     Each cell gets an integer code (0–CELL_AGENT) then the whole array is
     divided by CELL_AGENT so the range matches the RGB observation.
-
-    Drawing priority (highest wins in the same cell):
-      AGENT > GOAL_OBJECT / EXTRA_MOVABLE > GOAL_TARGET > AGENT_WALL > WALL
     """
     width, height = puzzle.dimensions
     grid = np.zeros((height, width), dtype=np.float32)
 
+    # Walls: wall_positions stores absolute (x, y) cell coords (position is (0,0))
     for x, y in puzzle.wall_positions:
         grid[y, x] = CELL_WALL
 
+    # Agent-only walls: same layout as walls
     for x, y in puzzle.agent_wall_positions:
         grid[y, x] = CELL_AGENT_WALL
 
-    # goal_state holds the *target* positions; goal objects occupy state[1..n_goals]
-    for x, y in puzzle.goal_state:
-        grid[y, x] = CELL_GOAL_TARGET
+    # Goal target markers (static). Each goal object can be multi-cell, so iterate
+    # its relative cell offsets exactly as render() does: pos + cell.
+    for g in puzzle._goals:
+        gx, gy = g.position
+        for cx, cy in g.cells:
+            grid[gy + cy, gx + cx] = CELL_GOAL_TARGET
 
+    # Movable objects paired with current positions from state — mirrors:
+    #   zip(self._movable_objects, state)
+    # movable_objects[0] = agent, [1..n_goals] = goal objects, rest = extra movables
     n_goals = len(puzzle.goal_state)
-    for i, (x, y) in enumerate(state[1:], start=1):
-        grid[y, x] = CELL_GOAL_OBJECT if i <= n_goals else CELL_EXTRA_MOVABLE
-
-    agent_x, agent_y = state[0]
-    grid[agent_y, agent_x] = CELL_AGENT
+    for i, (obj, pos) in enumerate(zip(puzzle.movable_objects, state)):
+        px, py = pos
+        if i == 0:
+            cell_val = CELL_AGENT
+        elif i <= n_goals:
+            cell_val = CELL_GOAL_OBJECT
+        else:
+            cell_val = CELL_EXTRA_MOVABLE
+        for cx, cy in obj.cells:
+            grid[py + cy, px + cx] = cell_val
 
     # Normalize to [0, 1] so dtype and range match the RGB observation
     grid /= CELL_AGENT
